@@ -1,0 +1,77 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+
+namespace InterceptExample
+{
+    [AttributeUsage(AttributeTargets.Method)]
+    public class InterceptsLocationAttribute : Attribute
+    {
+        public InterceptsLocationAttribute(string filePath, int lineNumber)
+        {
+            FilePath = filePath;
+            LineNumber = lineNumber;
+        }
+
+        public string FilePath { get; }
+        public int LineNumber { get; }
+    }
+
+    public static class Interception
+    {
+        private static readonly Dictionary<(string, int), (Func<Delegate, Delegate>, Func<Delegate, RequestDelegate>)> map =
+            new Dictionary<(string, int), (Func<Delegate, Delegate>, Func<Delegate, RequestDelegate>)>();
+
+        public static RouteHandlerBuilder MapGet(
+            this IEndpointRouteBuilder endpoints,
+            string pattern,
+            Delegate handler,
+            [CallerFilePath] string filePath = "",
+            [CallerLineNumber] int lineNumber = 0)
+        {
+            // Use the filePath and lineNumber as an index into the map dictionary
+            var (populateMetadata, createRequestDelegate) = map[(filePath, lineNumber)];
+
+            // Pass the functions to the minimal API internals
+            return RouteHandlerServices.Map(endpoints, pattern, handler, populateMetadata, createRequestDelegate);
+        }
+
+        public static void Intercept(Delegate handler)
+        {
+            // Create a new RequestDelegate from the handler
+            var requestDelegate = (RequestDelegate)handler.DynamicInvoke(null);
+
+            // Add the interceptor to the map
+            map.Add((null, 0), (
+                (Delegate d) => (context) =>
+                {
+                    Console.WriteLine($"Intercepted '{d.Method.Name}'");
+                    return populateMetadata(d, context);
+                },
+                createRequestDelegate));
+        }
+    }
+
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var app = WebApplication.CreateBuilder(args).Build();
+
+            // Intercept the method
+            Interception.Intercept(new Func<string>(MyMethod));
+
+            // Add the intercepted method to the app
+            app.MapGet("/", MyMethod);
+
+            app.Run();
+        }
+
+        [InterceptsLocation(@"C:\testapp\Program.cs", line: 4)]
+        public static string MyMethod()
+        {
+            return "Hello World!";
+        }
+    }
+}
